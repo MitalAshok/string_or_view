@@ -83,6 +83,13 @@ public:
     constexpr basic_string_or_view() noexcept : viewing(), tag(VIEWING) {}
     constexpr basic_string_or_view(const basic_string_or_view& other) {
         monostate.~empty_type();
+        if (this == &other) {
+            // `basic_string_or_view sv = sv;`
+            // other is *not* in lifetime, so this does not have to be supported
+            // But it can be so do so, as equivalent to `basic_string_or_view sv;`
+            construct_viewing();
+            return;
+        }
         switch (other.tag) {
         case 0:
             construct_viewing(other.viewing);
@@ -101,6 +108,10 @@ public:
 
     constexpr basic_string_or_view(basic_string_or_view&& other) noexcept {
         monostate.~empty_type();
+        if (this == &other) {
+            construct_viewing();
+            return;
+        }
         switch (other.tag) {
         case VIEWING:
             construct_viewing(other.viewing);
@@ -253,21 +264,24 @@ public:
         return *this;
     }
 
-    constexpr void own(string_type&& s) noexcept {
+    constexpr string_type& own(string_type&& s) noexcept {
         *this = static_cast<string_type&&>(s);
+        return owning;
     }
-    constexpr void own(const string_type& s) {
+    constexpr string_type& own(const string_type& s) {
         *this = s;
+        return owning;
     }
-    constexpr void view(string_view_type s) noexcept {
+    constexpr string_view_type& view(string_view_type s) noexcept {
         *this = s;
+        return viewing;
     }
 
     // If previously holding a view, copy it into a string and own that string. No effect if already is_owning().
     // Either throws in string constructor or is_owning() is now true.
     // Use the provided allocator if not owning, else replace the current one with the provided allocator
     // if they compare unequal
-    constexpr void make_owning(const allocator_type& alloc = allocator_type()) {
+    constexpr string_type& make_owning(const allocator_type& alloc = allocator_type()) {
         switch (tag) {
         case VIEWING:
             copy_string_when_holding_view(string_type(viewing, alloc));
@@ -281,10 +295,11 @@ public:
             break;
         STRING_OR_VIEW_UNREACHABLE_DEFAULT;
         }
+        return owning;
     }
 
     // As above but does not try replace existing allocator
-    constexpr void make_owning_keep_existing_alloc(const allocator_type& alloc = allocator_type()) {
+    constexpr string_type& make_owning_keep_existing_alloc(const allocator_type& alloc = allocator_type()) {
         switch (tag) {
         case VIEWING:
             copy_string_when_holding_view(string_type(viewing, alloc));
@@ -293,6 +308,7 @@ public:
             break;
         STRING_OR_VIEW_UNREACHABLE_DEFAULT;
         }
+        return owning;
     }
 
     // Copies from view (using provided allocator) if viewing else moves from owning
@@ -656,7 +672,7 @@ private:
     // previous union should be aligned on pointer, which should be the same align as size_t
     // (Not using enum to prevent warnings about the `default: unreachable()` branch on every switch)
     using tag_t = size_type;
-    tag_t tag = static_cast<tag_t>(2);
+    [[no_unique_address]] tag_t tag = static_cast<tag_t>(2);
     static constexpr tag_t OWNING = static_cast<tag_t>(1);
     static constexpr tag_t VIEWING = static_cast<tag_t>(0);
 };

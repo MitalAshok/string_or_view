@@ -74,14 +74,14 @@ struct basic_string_or_view {
 
 
     // Named assignment functions. Less possible conversions than `operator=`
-    constexpr void own(string_type&&) noexcept;
-    constexpr void own(const string_type&);
-    constexpr void view(string_view_type) noexcept;
+    constexpr string_type& own(string_type&&) noexcept;
+    constexpr string_type& own(const string_type&);
+    constexpr string_view_type& view(string_view_type) noexcept;
 
 
     // Possibly copy
-    constexpr void make_owning(const allocator_type& = allocator_type());
-    constexpr void make_owning_keep_existing_alloc(const allocator_type& = allocator_type());
+    constexpr string_type& make_owning(const allocator_type& = allocator_type());
+    constexpr string_type& make_owning_keep_existing_alloc(const allocator_type& = allocator_type());
 
 
     // Steal
@@ -282,20 +282,20 @@ and throw the same exceptions as the constructor.
 ### Named assignment functions
 
 ```c++
-constexpr void own(string_type&& other) noexcept;  // (1)
-constexpr void own(const string_type& other);  // (1)
+constexpr string_type& own(string_type&& other) noexcept;  // (1)
+constexpr string_type& own(const string_type& other);  // (1)
 
-constexpr void view(string_view_type other) noexcept;  // (2)
+constexpr string_view_type& view(string_view_type other) noexcept;  // (2)
 ```
 
-1. Calls `*this = other`. Afterwards, `is_owning()` is `true`.
-2. Calls `*this = other`. Afterwards, `is_viewing()` is `true`.
+1. Calls `*this = other` and returns the newly held owning string. Afterwards, `is_owning()` is `true`.
+2. Calls `*this = other` and returns the newly held view. Afterwards, `is_viewing()` is `true`.
 
 ### Possibly copy
 
 ```c++
-constexpr void make_owning(const allocator_type& = allocator_type());  // (1)
-constexpr void make_owning_keep_existing_alloc(const allocator_type& = allocator_type());  // (2)
+constexpr string_type& make_owning(const allocator_type& = allocator_type());  // (1)
+constexpr string_type& make_owning_keep_existing_alloc(const allocator_type& = allocator_type());  // (2)
 ```
 
 After calling either of these functions, if no exception is thrown, `is_owning()` will be `true`.
@@ -304,6 +304,8 @@ If currently viewing, constructs a `string_type` using the provided allocator, a
 
 If currently owning, `make_owning_keep_existing_alloc` will do nothing. `make_owning` will replace the allocator
 with the provided allocator (by move constructing from it). So `*(this->make_owning(alloc).get_allocator() == alloc` is always `true`
+
+Returns the newly constructed or existing held owning string.
 
 ### Steal
 

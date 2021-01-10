@@ -15,7 +15,8 @@ int main(int argc, char** argv) {
 
     string_or_view s;  // s is a view on a string of length 0
     s = "abc";  // s is now a view to a string literal of length 3
-    s = s.steal() + "def";  // s now owns a std::string("abcdef")
+    s.make_owning() += "def";  // s now owns a std::string("abcdef")
+    s = s.steal() + "ghi";  // s now owns a std::string("abcdefghi")
 
     std::string_view sv = s;  // Implicitly convertible
     // Or explicitly convertible with `s.get()` or `*s`
