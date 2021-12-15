@@ -70,7 +70,7 @@ struct basic_string_or_view {
 
     // State observers
     [[nodiscard]] constexpr bool is_owning() const noexcept;
-    [[nodiscard]] constexpr bool is_owning() const noexcept;
+    [[nodiscard]] constexpr bool is_viewing() const noexcept;
 
 
     // Named assignment functions. Less possible conversions than `operator=`
@@ -233,15 +233,16 @@ Complexity:
 6. Complexity of traits::length(other) and linear in the result of traits::length(other)
 7. Constant
 8. Linear in size of other
+9. Linear in size of other
 
 Exceptions
 
 1. `noexcept`
-2. No exceptions thrown if `other.is_owning()`. Otherwise any exceptions thrown by `string_type`'s copy constructor.
+2. No exceptions thrown if `other.is_viewing()`. Otherwise any exceptions thrown by `string_type`'s copy constructor.
 3. `noexcept`
 4. `noexcept`
 5. `noexcept`
-6. `noexcept` if `traits::length(other)` is `noexcept`, or `traits` is a standard CharTraits (`std::char_traits<T>` for `T = { char, wchar_t, char16_t, char32_t, char8_t }`)
+6. `noexcept` if `traits::length(other)` is `noexcept`, or `traits` is a standard CharTraits (`std::char_traits<T>` for `T = { char, wchar_t, char16_t, char32_t, char8_t }`). Otherwise, only throws whatever `traits::length(other)` can throw.
 7. `noexcept`
 8. Any exception thrown by `string_type`'s copy constructor.
 9. Any exception thrown by `string_type`'s constructor that takes another string and an allocator.
@@ -264,7 +265,7 @@ constexpr basic_string_or_view& operator=(const char_type*) noexcept(/* See cons
 constexpr basic_string_or_view& operator=(std::nullptr_t) noexcept;
 ```
 
-Copy and move constructors copy or move the held string or view from `other` into `*this` and then return `*thid`.
+Copy and move constructors copy or move the held string or view from `other` into `*this` and then return `*this`.
 
 The rest of the converting assignment operators taking `other` are equivalent to `*this = basic_string_or_view(other); return *this`,
 and throw the same exceptions as the constructor.
@@ -303,9 +304,9 @@ After calling either of these functions, if no exception is thrown, `is_owning()
 If currently viewing, constructs a `string_type` using the provided allocator, and own that.
 
 If currently owning, `make_owning_keep_existing_alloc` will do nothing. `make_owning` will replace the allocator
-with the provided allocator (by move constructing from it). So `*(this->make_owning(alloc).get_allocator() == alloc` is always `true`
+with the provided allocator (by move constructing from it). So `*(this->make_owning(alloc).get_allocator()) == alloc` is always `true` if no exceptions are thrown.
 
-Returns the newly constructed or existing held owning string.
+Returns the newly constructed or currently held owning string.
 
 ### Steal
 
@@ -391,7 +392,7 @@ friend std::basic_istream<char_type, traits_type>& operator>>(std::basic_istream
 ```
 
 1. Equivalent to `os << sov.get()`.
-2. If `sov` is not owning, assign to a default constructed string. Then return `is >> sov./* internally_held_string */`.
+2. If `sov` is not owning, assign to a default constructed string. Then return `is >> sov.access_underlying_owned()`.
    Requires that the allocator type is default constructible to create an owning string if it is not already owning.
 
 
