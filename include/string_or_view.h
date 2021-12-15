@@ -12,15 +12,11 @@
 #include <type_traits>
 
 
-#ifdef __has_cpp_attribute
-#if __has_cpp_attribute(unreachable)
-#define STRING_OR_VIEW_UNREACHABLE_DEFAULT default: [[unreachable]]
-#endif
-#endif
-
 #if defined(__has_builtin) && !defined(STRING_OR_VIEW_UNREACHABLE_DEFAULT)
 #if __has_builtin(__builtin_unreachable)
 #define STRING_OR_VIEW_UNREACHABLE_DEFAULT default: __builtin_unreachable()
+#elif __has_builtin(__builtin_assume)
+#define STRING_OR_VIEW_UNREACHABLE_DEFAULT default: __builtin_assume(0)
 #elif __has_builtin(__assume)
 #define STRING_OR_VIEW_UNREACHABLE_DEFAULT default: __assume(0)
 #endif
@@ -28,6 +24,12 @@
 
 #if defined(_MSC_VER) && !defined(STRING_OR_VIEW_UNREACHABLE_DEFAULT)
 #define STRING_OR_VIEW_UNREACHABLE_DEFAULT default: __assume(0)
+#endif
+
+#if defined(__has_cpp_attribute) && !defined(STRING_OR_VIEW_UNREACHABLE_DEFAULT)
+#if __has_cpp_attribute(unreachable)
+#define STRING_OR_VIEW_UNREACHABLE_DEFAULT default: [[unreachable]]
+#endif
 #endif
 
 #ifndef STRING_OR_VIEW_UNREACHABLE_DEFAULT
