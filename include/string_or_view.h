@@ -22,6 +22,29 @@
 #endif
 #endif
 
+// Old versions of gcc don't have __has_builtin, so version check manually
+// (__builtin_unreachable was added in gcc 4.5; probably available in all versions
+// that can actually compile this library with C++17 support, but doesn't hurt to check)
+#if \
+    !defined(STRING_OR_VIEW_UNREACHABLE_DEFAULT) && !defined(__clang__) && \
+    defined(__GNUC__) && defined(__GNUC_MINOR__) && defined(__GNUC_PATCHLEVEL__) && \
+    __GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 5)
+
+#define STRING_OR_VIEW_UNREACHABLE_DEFAULT default: __builtin_unreachable()
+
+#endif
+
+#if defined(__is_identifier) && !defined(STRING_OR_VIEW_UNREACHABLE_DEFAULT)
+#if __is_identifier(__builtin_unreachable)
+#define STRING_OR_VIEW_UNREACHABLE_DEFAULT default: __builtin_unreachable()
+#elif __is_identifier(__builtin_assume)
+#define STRING_OR_VIEW_UNREACHABLE_DEFAULT default: __builtin_assume(0)
+#elif __is_identifier(__assume)
+#define STRING_OR_VIEW_UNREACHABLE_DEFAULT default: __assume(0)
+#endif
+#endif
+
+// msvc doesn't provide __has_builtin
 #if defined(_MSC_VER) && !defined(STRING_OR_VIEW_UNREACHABLE_DEFAULT)
 #define STRING_OR_VIEW_UNREACHABLE_DEFAULT default: __assume(0)
 #endif
@@ -87,8 +110,8 @@ public:
         monostate.~empty_type();
         if (this == &other) {
             // `basic_string_or_view sv = sv;`
-            // other is *not* in lifetime, so this does not have to be supported
-            // But it can be so do so, as equivalent to `basic_string_or_view sv;`
+            // other is *not* valid (tag == 2), so this does not have to be supported
+            // But it can be, so do so, as equivalent to `basic_string_or_view sv;`
             construct_viewing();
             return;
         }
@@ -130,10 +153,17 @@ public:
     constexpr basic_string_or_view(const char_type* other) noexcept(can_noexcept_construct_view_from_char_pointer) : viewing(other, traits_length(other)), tag(VIEWING) {}
     constexpr basic_string_or_view(std::nullptr_t) noexcept : basic_string_or_view() {}
 
+    template<typename... Args>
+    static constexpr bool string_type_nothrow_constructible() noexcept {
+        return noexcept(::new (static_cast<void*>(nullptr), constexpr_new_tag{0}) string_type(::std::declval<Args>()...));
+    }
+
     // Same note as copy constructor: string_type constructor throwing is fine
     constexpr basic_string_or_view(const string_type& other) : owning(other), tag(OWNING) {}
     constexpr basic_string_or_view(const string_type& other, const allocator_type& alloc) : owning(other, alloc), tag(OWNING) {}
-    constexpr basic_string_or_view(string_type&& other, const allocator_type& alloc) noexcept(string_type_nothrow_constructible<string_type, const allocator_type&>()) : owning(static_cast<string_type&&>(other), alloc), tag(OWNING) {}
+    constexpr basic_string_or_view(string_type&& other, const allocator_type& alloc)
+        noexcept(string_type_nothrow_constructible<string_type, const allocator_type&>() || std::allocator_traits<allocator_type>::is_always_equal::value)
+        : owning(static_cast<string_type&&>(other), alloc), tag(OWNING) {}
 
     constexpr basic_string_or_view& operator=(const basic_string_or_view& other) {
         switch (tag) {
@@ -248,10 +278,6 @@ public:
         return *this = string_view_type(other, traits_length(other));
     }
 
-    constexpr basic_string_or_view& operator=(char_type* other) noexcept(false) {
-        return *this = string_type(other);
-    }
-
     constexpr basic_string_or_view& operator=(std::nullptr_t) noexcept {
         switch (tag) {
         case VIEWING:
@@ -290,7 +316,9 @@ public:
             break;
         case OWNING:
             if constexpr (!std::allocator_traits<allocator_type>::is_always_equal::value) {
-                if (!static_cast<bool>(owning.get_allocator() == alloc)) {
+                if (owning.get_allocator() == alloc) {
+                    // Already has equivalent
+                } else {
                     owning = string_type(static_cast<string_type&&>(owning), alloc);
                 }
             }
@@ -300,7 +328,7 @@ public:
         return owning;
     }
 
-    // As above but does not try replace existing allocator
+    // As above but does not try to replace existing allocator
     constexpr string_type& make_owning_keep_existing_alloc(const allocator_type& alloc = allocator_type()) {
         switch (tag) {
         case VIEWING:
@@ -395,7 +423,7 @@ public:
     [[nodiscard]] friend constexpr bool operator>=(const basic_string_or_view& l, string_view_type r) noexcept { return *l >= r; }
 #endif
 
-    void swap(basic_string_or_view& other) noexcept(noexcept(owning.swap(other.owning))) {
+    void swap(basic_string_or_view& other) noexcept(noexcept(this->owning.swap(other.owning))) {
         switch (tag) {
         case VIEWING:
             switch (other.tag) {
@@ -425,13 +453,21 @@ public:
         }
     }
 
+    void swap(basic_string_or_view&& other) noexcept(noexcept(this->owning.swap(other.owning))) {
+        return swap(other);
+    }
+
+    // Strong exception guarantee: Any exceptions thrown will not change any state
+    // (Will not throw if is_owning())
     void swap(string_type& other) {
         switch (tag) {
         case VIEWING: {
-            string_view_type sv = viewing;
+            string_type copy(viewing, other.get_allocator());
+
+            // The following statements cannot throw, so this will be in a valid state
             viewing.~basic_string_view();
             construct_owning(static_cast<string_type&&>(other));
-            other = sv;
+            other = static_cast<string_type&&>(copy);
             break;
         }
         case OWNING:
@@ -441,17 +477,21 @@ public:
         }
     }
 
-    friend void swap(basic_string_or_view& l, basic_string_or_view& r) noexcept(noexcept(l.swap(r))) {
-        l.swap(r);
-    }
+    void swap(string_type&& other) { swap(other); }
 
-    friend void swap(basic_string_or_view& l, string_type& r) {
-        l.swap(r);
-    }
+    friend void swap(basic_string_or_view&  l, basic_string_or_view&  r) noexcept(noexcept(l.swap(r))) { l.swap(r); }
+    friend void swap(basic_string_or_view&& l, basic_string_or_view&  r) noexcept(noexcept(l.swap(r))) { l.swap(r); }
+    friend void swap(basic_string_or_view&  l, basic_string_or_view&& r) noexcept(noexcept(l.swap(r))) { l.swap(r); }
+    friend void swap(basic_string_or_view&& l, basic_string_or_view&& r) noexcept(noexcept(l.swap(r))) { l.swap(r); }
 
-    friend void swap(string_type& l, basic_string_or_view& r) {
-        r.swap(l);
-    }
+    friend void swap(basic_string_or_view&  l, string_type&  r) { l.swap(r); }
+    friend void swap(basic_string_or_view&& l, string_type&  r) { l.swap(r); }
+    friend void swap(basic_string_or_view&  l, string_type&& r) { l.swap(r); }
+    friend void swap(basic_string_or_view&& l, string_type&& r) { l.swap(r); }
+    friend void swap(string_type&  l, basic_string_or_view&  r) { r.swap(l); }
+    friend void swap(string_type&& l, basic_string_or_view&  r) { r.swap(l); }
+    friend void swap(string_type&  l, basic_string_or_view&& r) { r.swap(l); }
+    friend void swap(string_type&& l, basic_string_or_view&& r) { r.swap(l); }
 
     // copying string_view interface
     using value_type = char_type;
@@ -559,8 +599,77 @@ public:
     constexpr size_type copy(char_type* dest, size_type count, size_type pos = 0) const {
         return (**this).copy(dest, count, pos);
     }
-    // [[nodiscard]] constexpr string_view_type substr(size_type ) const;  // TODO: Rest of string_view interface
     static constexpr std::size_t npos = static_cast<std::size_t>(-1);
+    [[nodiscard]] constexpr string_view_type substr(size_type pos = 0, size_type count = npos) const { return (**this).substr(pos, count); }
+    [[nodiscard]] constexpr int compare(string_view_type v) const noexcept { return (**this).compare(v); }
+    [[nodiscard]] constexpr int compare(const basic_string_or_view& v) const noexcept { return (**this).compare(*v); }
+    [[nodiscard]] constexpr int compare(size_type pos1, size_type count1, string_view_type v) const { return (**this).compare(pos1, count1, v); }
+    [[nodiscard]] constexpr int compare(size_type pos1, size_type count1, const basic_string_or_view& v) const { return (**this).compare(pos1, count1, *v); }
+    [[nodiscard]] constexpr int compare(const char_type* s) const { return (**this).compare(s); }
+    [[nodiscard]] constexpr int compare(size_type pos1, size_type count1, const char_type* s) const { return (**this).compare(pos1, count1, s); }
+    [[nodiscard]] constexpr int compare(size_type pos1, size_type count1, const char_type* s, size_type count2) const { return (**this).compare(pos1, count1, s, count2); }
+#ifdef __cpp_lib_starts_ends_with
+    [[nodiscard]] constexpr bool starts_with(string_view_type sv) const noexcept { return (**this).starts_with(sv); }
+    [[nodiscard]] constexpr bool starts_with(char_type c) const noexcept { return (**this).starts_with(c); }
+    [[nodiscard]] constexpr bool starts_with(const char_type* s) const noexcept { return (**this).starts_with(s); }
+    [[nodiscard]] constexpr bool ends_with(string_view_type sv) const noexcept { return (**this).ends_with(sv); }
+    [[nodiscard]] constexpr bool ends_with(char_type c) const noexcept { return (**this).ends_with(c); }
+    [[nodiscard]] constexpr bool ends_with(const char_type* s) const noexcept { return (**this).ends_with(s); }
+#else
+    [[nodiscard]] constexpr bool starts_with(string_view_type sv) const noexcept { return substr(0, sv.size()) == sv; }
+    [[nodiscard]] constexpr bool starts_with(char_type c) const noexcept { return !empty() && traits_type::eq(front(), c); }
+    [[nodiscard]] constexpr bool starts_with(const char_type* s) const noexcept { return starts_with(string_view_type(s)); }
+    [[nodiscard]] constexpr bool ends_with(string_view_type sv) const noexcept { auto sz = size(); return sz >= sv.size() && compare(sz - sv.size(), npos, sv) == 0; }
+    [[nodiscard]] constexpr bool ends_with(char_type c) const noexcept { return !empty() && traits_type::eq(back(), c); }
+    [[nodiscard]] constexpr bool ends_with(const char_type* s) const noexcept { return ends_with(string_view_type(s)); }
+#endif
+#ifdef __cpp_lib_string_contains
+    [[nodiscard]] constexpr bool contains(string_view_type sv) const noexcept { return (**this).contains(sv); }
+    [[nodiscard]] constexpr bool contains(char_type c) const noexcept { return (**this).contains(c); }
+    [[nodiscard]] constexpr bool contains(const char_type* s) const noexcept { return (**this).contains(s); }
+#else
+    [[nodiscard]] constexpr bool contains(string_view_type sv) const noexcept { return (**this).find(sv) != npos; }
+    [[nodiscard]] constexpr bool contains(char_type c) const noexcept { return (**this).find(c) != npos; }
+    [[nodiscard]] constexpr bool contains(const char_type* s) const noexcept { return (**this).find(s) != npos; }
+#endif
+
+    constexpr void clear() {
+        switch (tag) {
+        case VIEWING:
+            viewing.remove_suffix(viewing.size());
+            break;
+        case OWNING:
+            owning.clear();
+            break;
+        STRING_OR_VIEW_UNREACHABLE_DEFAULT;
+        }
+    }
+
+    constexpr void remove_suffix(size_type n) {
+        switch (tag) {
+        case VIEWING:
+            viewing.remove_suffix(::std::min(n, viewing.size()));
+            break;
+        case OWNING: {
+            // owning.erase(::std::min(n, owning.size()));
+            size_type sz = owning.size(); owning.resize(n > sz ? size_type{0u} : sz - n);
+            break;
+        }
+        STRING_OR_VIEW_UNREACHABLE_DEFAULT;
+        }
+    }
+
+    constexpr void remove_prefix(size_type n) {
+        switch (tag) {
+        case VIEWING:
+            viewing.remove_prefix(::std::min(n, viewing.size()));
+            break;
+        case OWNING:
+            owning.erase(0, ::std::min(n, owning.size()));
+            break;
+        STRING_OR_VIEW_UNREACHABLE_DEFAULT;
+        }
+    }
 
     friend std::basic_ostream<char_type, traits_type>& operator<<(std::basic_ostream<char_type, traits_type>& os, const basic_string_or_view& sov) {
         return os << *sov;
@@ -596,19 +705,13 @@ public:
     }
 
     // NOTE: these references can only be used if is_owning(). Use carefully!
-    [[nodiscard]] constexpr string_type& access_underlying_owned() noexcept {
-        return owning;
-    }
-    [[nodiscard]] constexpr const string_type& access_underlying_owned() const noexcept {
-        return owning;
-    }
+    [[nodiscard]] constexpr       string_type&  access_underlying_owned()      &  noexcept { return owning; }
+    [[nodiscard]] constexpr       string_type&& access_underlying_owned()      && noexcept { return static_cast<string_type&&>(owning); }
+    [[nodiscard]] constexpr const string_type&  access_underlying_owned() const&  noexcept { return owning; }
     // NOTE: these references can only be used if !is_owning(). Use carefully!
-    [[nodiscard]] constexpr string_view_type& access_underlying_view() noexcept {
-        return viewing;
-    }
-    [[nodiscard]] constexpr const string_view_type& access_underlying_view() const noexcept {
-        return viewing;
-    }
+    [[nodiscard]] constexpr       string_view_type&  access_underlying_view()      &  noexcept { return viewing; }
+    [[nodiscard]] constexpr       string_view_type&& access_underlying_view()      && noexcept { return static_cast<string_view_type&&>(viewing); }
+    [[nodiscard]] constexpr const string_view_type&  access_underlying_view() const&  noexcept { return viewing; }
 
 #ifdef __cpp_constexpr_dynamic_alloc
     constexpr
@@ -623,7 +726,9 @@ public:
             break;
         STRING_OR_VIEW_UNREACHABLE_DEFAULT;
         }
-        tag = static_cast<tag_t>(-1);  // Should be optimized out; Just marking now object is in an invalid state.
+        // This should be optimized out since the object is immediately destroyed
+        // Just marking now object is in an invalid state for debug builds
+        tag = static_cast<tag_t>(-1);
     }
 
 private:
@@ -638,11 +743,6 @@ private:
     constexpr void copy_string_when_holding_view(string_type s) noexcept {
         viewing.~basic_string_view();
         construct_owning(static_cast<string_type&&>(s));
-    }
-
-    template<typename... Args>
-    static constexpr bool string_type_nothrow_constructible() noexcept {
-        return noexcept(::new (static_cast<void*>(nullptr), constexpr_new_tag{0}) string_type(::std::declval<Args>()...));
     }
 
     template<typename... Args>
@@ -666,15 +766,15 @@ private:
 
     struct empty_type {};
 
-    [[no_unique_address]] union {
-        [[no_unique_address]] string_view_type viewing;
-        [[no_unique_address]] string_type owning;
-        [[maybe_unused, no_unique_address]] empty_type monostate{};  // For constexpr-ness, where every field needs to be initialised
+    union {
+        empty_type monostate{};  // For constexpr-ness, where every field needs to be initialised
+        string_view_type viewing;
+        string_type owning;
     };
     // previous union should be aligned on pointer, which should be the same align as size_t
     // (Not using enum to prevent warnings about the `default: unreachable()` branch on every switch)
     using tag_t = size_type;
-    [[no_unique_address]] tag_t tag = static_cast<tag_t>(2);
+    tag_t tag = static_cast<tag_t>(2);
     static constexpr tag_t OWNING = static_cast<tag_t>(1);
     static constexpr tag_t VIEWING = static_cast<tag_t>(0);
 };
