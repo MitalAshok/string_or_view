@@ -106,42 +106,29 @@ private:
 public:
 
     constexpr basic_string_or_view() noexcept : viewing(), tag(VIEWING) {}
-    constexpr basic_string_or_view(const basic_string_or_view& other) {
-        monostate.~empty_type();
-        if (this == &other) {
-            // `basic_string_or_view sv = sv;`
-            // other is *not* valid (tag == 2), so this does not have to be supported
-            // But it can be, so do so, as equivalent to `basic_string_or_view sv;`
-            construct_viewing();
-            return;
-        }
+    constexpr basic_string_or_view(const basic_string_or_view& other) : basic_string_or_view() {
+        // NOTE: because of the delegating constructor, destructor will be called
+        // if something (i.e., copying other's string) throws
+
         switch (other.tag) {
-        case 0:
-            construct_viewing(other.viewing);
+        case VIEWING:
+            // (Self assignment `string_or_view sov = sov;` supported because other is an empty view at this point)
+            viewing = other.viewing;
             break;
-        case 1:
-            // NOTE: If this throws, tag is neither OWNING nor VIEWING.
-            // This and `basic_string_or_view(const string_type&)` are the only places where this can happen
-            // but then this is propagated out of the constructor
-            // and ~basic_string_or_view() isn't called (this is not an object in lifetime yet)
-            // so no basic_string_or_view object will ever have an invalid tag
-            construct_owning<true>(other.owning);
+        case OWNING:
+            copy_string_when_holding_view(other.owning);
             break;
         STRING_OR_VIEW_UNREACHABLE_DEFAULT;
         }
     }
 
-    constexpr basic_string_or_view(basic_string_or_view&& other) noexcept {
-        monostate.~empty_type();
-        if (this == &other) {
-            construct_viewing();
-            return;
-        }
+    constexpr basic_string_or_view(basic_string_or_view&& other) noexcept : basic_string_or_view() {
         switch (other.tag) {
         case VIEWING:
-            construct_viewing(other.viewing);
+            viewing = other.viewing;
             break;
         case OWNING:
+            viewing.~basic_string_view();
             construct_owning(static_cast<string_type&&>(other.owning));
             break;
         STRING_OR_VIEW_UNREACHABLE_DEFAULT;
@@ -309,7 +296,7 @@ public:
     // Either throws in string constructor or is_owning() is now true.
     // Use the provided allocator if not owning, else replace the current one with the provided allocator
     // if they compare unequal
-    constexpr string_type& make_owning(const allocator_type& alloc = allocator_type()) {
+    constexpr string_type& make_owning_replace_alloc(const allocator_type& alloc = allocator_type()) {
         switch (tag) {
         case VIEWING:
             copy_string_when_holding_view(string_type(viewing, alloc));
@@ -329,7 +316,7 @@ public:
     }
 
     // As above but does not try to replace existing allocator
-    constexpr string_type& make_owning_keep_existing_alloc(const allocator_type& alloc = allocator_type()) {
+    constexpr string_type& make_owning(const allocator_type& alloc = allocator_type()) {
         switch (tag) {
         case VIEWING:
             copy_string_when_holding_view(string_type(viewing, alloc));
@@ -764,17 +751,14 @@ private:
         tag = VIEWING;
     }
 
-    struct empty_type {};
-
     union {
-        empty_type monostate{};  // For constexpr-ness, where every field needs to be initialised
         string_view_type viewing;
         string_type owning;
     };
     // previous union should be aligned on pointer, which should be the same align as size_t
     // (Not using enum to prevent warnings about the `default: unreachable()` branch on every switch)
     using tag_t = size_type;
-    tag_t tag = static_cast<tag_t>(2);
+    tag_t tag;
     static constexpr tag_t OWNING = static_cast<tag_t>(1);
     static constexpr tag_t VIEWING = static_cast<tag_t>(0);
 };
